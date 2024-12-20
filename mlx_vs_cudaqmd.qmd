@@ -1,0 +1,143 @@
+---
+title: "Compare MLX & MPnet Cuda"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+library(tidyverse)
+library(aricode)
+library(umap)
+library(patchwork)
+```
+ 
+# Data
+
+```{r, read_embeddings}
+mlx_bert_pool <- read_csv("~/data/trust/trust_mlx_embeddings.csv") # these are the first results, where we're using the BertPooler which was already implemented in mlx_embeddings
+mlx_mean_pool <- read_csv("~/data/trust/trust_mlx_mean_pooling_embeddings.csv") # With the attempt at mean pooling, definitely not 100% still.
+mps_st <- read_csv("~/data/trust/trust_mps_embeddings.csv")
+cuda <- read_csv("~/data/trust/trust_cuda_mpnet.csv")
+```
+
+```{r}
+nrow(mlx_bert_pool) == nrow(cuda)
+```
+
+# Clustering
+```{r}
+n_clusters <- 20
+n_iters <- 100L
+```
+
+
+
+```{r}
+#| eval: false
+set.seed(1234)
+mlx_bert_pool_clusters <- kmeans(mlx_bert_pool, n_clusters, iter.max = n_iters)
+set.seed(1234)
+mlx_mean_pool_clusters <- kmeans(mlx_mean_pool, n_clusters, iter.max = n_iters)
+set.seed(1234)
+mps_st_clusters <- kmeans(mps_st, n_clusters, iter.max = n_iters)
+set.seed(1234)
+cuda_clusters <- kmeans(cuda, n_clusters, iter.max = n_iters)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# save em and hide if rendering
+tibble(mlx_bert_pool = mlx_bert_pool_clusters$cluster) %>% write_csv("clusters/mlx_bert_pool_clusters.csv")
+
+tibble(mlx_mean_pool = mlx_mean_pool_clusters$cluster) %>% write_csv("clusters/mlx_mean_pool_clusters.csv")
+
+tibble(mps_st = mps_st_clusters$cluster) %>%
+  write_csv("clusters/mps_st_clusters_clusters.csv")
+
+tibble(cuda_clusters = cuda_clusters$cluster)  %>% 
+  write_csv("clusters/cuda_clusters.csv")
+```
+
+```{r}
+#| echo: false
+
+# read em back in
+mlx_bert_pool_clusters <- read_csv("clusters/mlx_bert_pool_clusters.csv")
+mlx_mean_pool_clusters <- read_csv("clusters/mlx_mean_pool_clusters.csv")
+mps_st_clusters <- read_csv("clusters/mps_st_clusters_clusters.csv")
+cuda_clusters <- read_csv("clusters/cuda_clusters.csv")
+```
+
+# Comparisons
+```{r, compare}
+runs <- list(
+  bert_pool = mlx_bert_pool_clusters$mlx_bert_pool, 
+  mean_pool = mlx_mean_pool_clusters$mlx_mean_pool,
+  cuda = cuda_clusters$cuda_clusters,
+  mps = mps_st_clusters$mps_st
+  )
+```
+
+```{r}
+#| eval: false
+#| echo: false
+cor(mps_st, cuda) %>% reduce(mean)
+cor(cuda, mlx_bert_pool) %>% reduce(mean)
+```
+
+
+```{r}
+comparisons <- expand_grid(
+  method1 = names(runs),
+  method2 = names(runs)
+) %>%
+  filter(method1 < method2) %>%  # This ensures we only get lower triangle
+  mutate(
+    ARI = map2_dbl(
+      method1, method2,
+      ~aricode::ARI(runs[[.x]], runs[[.y]])
+    ),
+    NMI = map2_dbl(
+      method1, method2,
+      ~aricode::NMI(runs[[.x]], runs[[.y]])
+    )
+  )
+
+comparisons # MPS and cuda are identical, perfect.
+# comparisons %>%
+  # write_csv("results/mlx_cuda_comparisons.csv")
+```
+
+Will blow you up if you're on a machine with < ~32gb RAM.
+```{r}
+cuda_reduced <- umap::umap(cuda, config = umap.defaults)
+mlx_reduced <- umap::umap(as.matrix(mlx_bert_pool), config = umap.defaults)
+mlx_mean_pool_reduced <- umap::umap(as.matrix(mlx_mean_pool), config = umap.defaults)
+# Not worth doing the MPS as they are *identical* to cuda.
+```
+
+```{r}
+scatter_func <- function(reduced, cluster) {
+   plot <- as_tibble(reduced$layout) %>%
+    mutate(cluster = factor(cluster$cluster)) %>%
+    filter(V1 < 10, V1> -10, V2< 10, V2> -10) %>%
+    ggplot(aes(x= V1, y = V2, colour = cluster)) +
+    geom_point(shape = ".")
+   
+   return(plot)
+}
+
+cuda_plot <- scatter_func(cuda_reduced, cuda_clusters)
+mlx_mean_pool_plot <- scatter_func(mlx_mean_pool_reduced, cuda_clusters)
+# mlx_plot <- scatter_func(mlx_reduced)
+```
+
+
+```{r}
+cuda_plot + mlx_mean_pool_plot +
+  plot_layout(ncol = 1) # Outputs are very different, whichever way we slice em up
+```
+
